@@ -1,9 +1,6 @@
 #include <WiFiNINA.h>
 #include <ArduinoJson.h>
-
-// Remplace par les informations de ton réseau Wi-Fi
-const char* ssid = "Pixel 6 Bastien";  // Nom du réseau Wi-Fi (par exemple le partage de connexion de ton téléphone)
-const char* password = "Gaspezia";  // Mot de passe du réseau Wi-Fi
+#include "credentials.h"
 
 const char* server = "iot.gaspezia.fr";
 
@@ -15,7 +12,7 @@ void setup() {
   Serial.begin(9600);
   
   // Tentative de connexion au réseau Wi-Fi
-  while (WiFi.begin(ssid, password) != WL_CONNECTED) {
+  while (WiFi.begin(SSID, WIFI_PASSWORD) != WL_CONNECTED) {
     Serial.print(".");
     delay(1000);
   }
