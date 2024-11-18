@@ -1,111 +1,118 @@
 #include <WiFiNINA.h>
-#include <ArduinoJson.h>
-#include "credentials.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
-#include <SPI.h>
+#include "credentials.h"
 
+// Configuration
 const char* server = "iot.gaspezia.fr";
+const int port = 443; // HTTPS port
 
-// Initialisation de l'objet écran (utilise le mode matériel SPI)
+WiFiSSLClient client;
 Adafruit_ST7735 tft = Adafruit_ST7735(10, 9, 8);
 
-// Objet Wi-Fi client
-WiFiSSLClient client;
-
 void setup() {
-  // Initialisation du moniteur série pour débogage
   Serial.begin(9600);
-  
-  // Initialisation de l'écran
-  tft.initR(INITR_BLACKTAB);  // Type d'initialisation pour l'écran RB TFT 1.8"
-  tft.fillScreen(ST7735_BLACK);  // Efface l'écran et remplit en noir
-  
-  // Définir la couleur de texte et le fond
-  tft.setTextColor(ST7735_WHITE, ST7735_BLACK);  // Texte blanc sur fond noir
-  tft.setTextSize(1);  // Taille du texte
 
-  // Message de démarrage sur l'écran
+  // Initialisation de l'écran
+  tft.initR(INITR_BLACKTAB);
+  tft.fillScreen(ST7735_BLACK);
+  tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+  tft.setTextSize(1);
   tft.setCursor(10, 10);
   tft.println("Demarrage...");
-  
-  // Tentative de connexion au réseau Wi-Fi
-  tft.setCursor(10, 30);
-  tft.println("Connexion Wi-Fi...");
-  while (WiFi.begin(SSID, WIFI_PASSWORD) != WL_CONNECTED) {
-    Serial.print(".");
-    tft.print(".");  // Affiche des points de progression sur l'écran
-    delay(1000);
-  }
 
-  Serial.println("Connecté au Wi-Fi !");
-  tft.setCursor(10, 50);
-  tft.println("Connecté au Wi-Fi!");
+  // Connexion Wi-Fi
+  connectWiFi();
 }
 
 void loop() {
-  // Vérification de la connexion Wi-Fi
-  if (WiFi.status() == WL_CONNECTED) {
-    // Si la connexion Wi-Fi est active, faire une requête GET via HTTPS
-    faireRequeteGET();
-  } else {
-    Serial.println("Connexion Wi-Fi perdue !");
-    tft.setCursor(10, 70);
-    tft.println("Wi-Fi perdu!");
+  String response = sendGETRequest("/api/");
+  if (!response.isEmpty()) {
+    displayResponse(response);
   }
 
-  delay(10000);  // Attendre 10 secondes avant de refaire la requête GET
+  delay(10000); // Attendre 10 secondes
 }
 
-void faireRequeteGET() {
-  // Connexion au serveur via HTTPS sur le port 443 (HTTPS)
-  if (client.connect(server, 443)) {
-    Serial.println("Connexion au serveur réussie (HTTPS) !");
-    tft.setCursor(10, 90);
-    tft.println("Connecté au serveur!");
+void connectWiFi() {
+  tft.fillScreen(ST7735_BLACK);
+  tft.setCursor(10, 10);
+  tft.println("Connexion Wi-Fi...");
 
-    // Envoi de la requête HTTP GET sur /api
-    client.println("GET /api/ HTTP/1.1");  // Appel de l'API
-    client.println("Host: iot.gaspezia.fr");
+  int retries = 0;
+  while (WiFi.begin(SSID, WIFI_PASSWORD) != WL_CONNECTED && retries < 10) {
+    delay(1000);
+    tft.print(".");
+    retries++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Connecté au Wi-Fi !");
+    tft.setCursor(10, 30);
+    tft.println("Connecté !");
+  } else {
+    Serial.println("Echec de connexion Wi-Fi !");
+    tft.setCursor(10, 30);
+    tft.println("Echec !");
+  }
+}
+
+String sendGETRequest(const char* path) {
+  String response = "";
+
+  if (client.connect(server, port)) {
+    Serial.println("Connecté au serveur HTTPS !");
+    client.println(String("GET ") + path + " HTTP/1.1");
+    client.println(String("Host: ") + server);
     client.println("Connection: close");
-    client.println();  // Ligne vide pour terminer la requête
+    client.println();
 
-    // Attendre la réponse du serveur
-    String response = "";  // Variable pour stocker la réponse complète
-    bool headersEnded = false; // Indicateur pour la fin des en-têtes HTTP
+    // Vérification du statut HTTP
+    String statusLine = client.readStringUntil('\n');
+    Serial.println("Statut HTTP: " + statusLine);
 
-    while (client.connected() || client.available()) {
-      if (client.available()) {
-        String ligne = client.readStringUntil('\n');  // Lire ligne par ligne
-        Serial.println(ligne);  // Afficher la réponse dans le moniteur série
-        
-        // Si une ligne vide est rencontrée, cela signifie la fin des en-têtes HTTP
-        if (ligne == "\r") {
-          headersEnded = true; // Les en-têtes sont terminés, le reste est le body
-        }
-
-        // Si les en-têtes sont terminés, stocker la ligne de contenu
-        if (headersEnded) {
-          response += ligne + "\n";
-        }
-      }
+    if (!statusLine.startsWith("HTTP/1.1 200")) {
+      Serial.println("Erreur: Le serveur a répondu avec un statut non 200 !");
+      client.stop();
+      return ""; // Retourne une réponse vide en cas d'erreur
     }
 
-    // Afficher le contenu (body) de la réponse sur l'écran
-    tft.setCursor(10, 10);
-    tft.fillScreen(ST7735_BLACK);  // Efface l'écran avant d'afficher la nouvelle réponse
-    tft.println("Reponse du serveur:");
-    tft.setCursor(10, 30);
-    tft.println(response.substring(0, 60));  // Afficher les 60 premiers caractères
+    // Lire les en-têtes jusqu'à la ligne vide
+    while (client.connected()) {
+      String header = client.readStringUntil('\n');
+      if (header == "\r") break;
+    }
 
-    // Déconnexion du serveur
+    // Lire le corps de la réponse
+    while (client.available()) {
+      response += client.readString();
+    }
+
     client.stop();
-    Serial.println("Déconnecté du serveur.");
-    tft.setCursor(10, 50);
-    tft.println("Serveur deconnecte.");
+    Serial.println("Reponse recue !");
   } else {
-    Serial.println("Échec de la connexion au serveur HTTPS !");
-    tft.setCursor(10, 70);
-    tft.println("Echec connexion serveur!");
+    Serial.println("Echec de connexion au serveur HTTPS !");
+  }
+
+  return response;
+}
+
+
+void displayResponse(const String& response) {
+  tft.fillScreen(ST7735_BLACK);
+  tft.setCursor(10, 10);
+
+  if (response.isEmpty()) {
+    tft.println("Aucune reponse");
+  } else {
+    tft.println("Reponse:");
+
+    int lineStart = 0;
+    int lineLength = 20; // Nombre de caractères par ligne
+    for (int i = 0; i < response.length(); i += lineLength) {
+      tft.setCursor(10, 30 + (i / lineLength) * 10);
+      tft.println(response.substring(i, i + lineLength));
+    }
   }
 }
+
