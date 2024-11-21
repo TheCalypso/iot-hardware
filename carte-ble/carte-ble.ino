@@ -1,73 +1,81 @@
-// Include required libraries
 #include <Wire.h>
+#include <ArduinoBLE.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_TSL2591.h>
 #include <Adafruit_MCP9808.h>
 
-// Create sensor objects
+// Create instances of the sensors
 Adafruit_TSL2591 tsl = Adafruit_TSL2591(2591);
 Adafruit_MCP9808 tempsensor = Adafruit_MCP9808();
 
-// Define arbitrary IDs for sensors
-const uint8_t TSL2591_ID = 0x01; // Custom ID for TSL2591
-const uint8_t MCP9808_ID = 0x02; // Custom ID for MCP9808
+// BLE service and characteristics with custom UUIDs
+BLEService sensorService("12345678-1234-5678-1234-56789abcdef0");
+BLEFloatCharacteristic tempCharacteristic("12345678-1234-5678-1234-56789abcdef1", BLERead | BLENotify);
+BLEUnsignedIntCharacteristic lightCharacteristic("12345678-1234-5678-1234-56789abcdef2", BLERead | BLENotify);
 
 void setup() {
-  Serial.begin(115200);
-  
-  // Initialize TSL2591 light sensor
+  Serial.begin(9600);
+  while (!Serial);
+
+  Serial.println("Initializing sensors and BLE...");
+
+  // Initialize sensors
   if (!tsl.begin()) {
-    Serial.println("Couldn't find TSL2591 sensor!");
+    Serial.println("Error: TSL2591 sensor not found!");
     while (1);
   }
-  Serial.println("TSL2591 Light Sensor initialized");
+  Serial.println("TSL2591 detected.");
 
-  // Set gain and timing for TSL2591
-  tsl.setGain(TSL2591_GAIN_MED);  // Options: LOW, MED, HIGH, MAX
-  tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS); // Options: 100MS to 600MS
-
-  // Read the chip version from the status register
-  uint8_t chipVersion = tsl.getStatus() & 0x0F; // Get version bits
-  Serial.print("TSL2591 Chip Version: 0x");
-  Serial.println(chipVersion, HEX); // Print version in hex
-
-  // Initialize MCP9808 temperature sensor
   if (!tempsensor.begin(0x18)) {
-    Serial.println("Couldn't find MCP9808 sensor!");
+    Serial.println("Error: MCP9808 sensor not found!");
     while (1);
   }
-  Serial.println("MCP9808 Temperature Sensor initialized");
+  Serial.println("MCP9808 detected.");
 
-  // Read manufacturer and device IDs from MCP9808
-  uint16_t manufacturerID = tempsensor.read16(0x06);  // Manufacturer ID register
-  uint16_t deviceID = tempsensor.read16(0x07);        // Device ID register
-  
-  Serial.print("MCP9808 Manufacturer ID: 0x"); Serial.println(manufacturerID, HEX);
-  Serial.print("MCP9808 Device ID: 0x"); Serial.println(deviceID, HEX);
+  // Initialize BLE
+  if (!BLE.begin()) {
+    Serial.println("Error: BLE initialization failed!");
+    while (1);
+  }
+
+  BLE.setLocalName("Nano33Sense");
+  BLE.setAdvertisedService(sensorService);
+
+  sensorService.addCharacteristic(tempCharacteristic);
+  sensorService.addCharacteristic(lightCharacteristic);
+  BLE.addService(sensorService);
+
+  tempCharacteristic.writeValue(0.0);
+  lightCharacteristic.writeValue(0);
+  BLE.advertise();
+
+  Serial.println("BLE is advertising!");
 }
 
 void loop() {
-  // Read TSL2591 light sensor data and calculate lux
-  uint32_t full_spectrum = tsl.getFullLuminosity(); // Get combined IR + visible
-  uint16_t infrared = full_spectrum >> 16;          // IR data
-  uint16_t visible = full_spectrum & 0xFFFF;        // Visible data
+  BLEDevice central = BLE.central();
 
-  // Calculate lux
-  float lux = tsl.calculateLux(visible, infrared);
-  
-  if (lux < 0) {
-    Serial.println("Lux calculation error. Please check sensor configuration.");
-  } else {
-    Serial.print("TSL2591 ID: 0x"); Serial.print(TSL2591_ID, HEX); // Print custom ID
-    Serial.print(" | Lux: "); Serial.println(lux);
+  if (central) {
+    Serial.print("Connected to central: ");
+    Serial.println(central.address());
+
+    while (central.connected()) {
+      uint16_t visible = tsl.getLuminosity(TSL2591_VISIBLE);
+      float temperature = tempsensor.readTempC();
+
+      tempCharacteristic.writeValue(temperature);
+      lightCharacteristic.writeValue(visible);
+
+      Serial.print("Temp: ");
+      Serial.print(temperature);
+      Serial.print(" °C | Light: ");
+      Serial.print(visible);
+      Serial.println(" lux");
+
+      delay(2000); // Reduce data update frequency
+    }
+
+    Serial.println("Central disconnected. Restarting BLE advertising...");
+    BLE.advertise(); // Restart advertising after disconnection
   }
-
-  // Read MCP9808 temperature sensor data
-  float temperature = tempsensor.readTempC();
-  
-  Serial.print("MCP9808 ID: 0x"); Serial.print(MCP9808_ID, HEX); // Print custom ID
-  Serial.print(" | Temperature: "); Serial.print(temperature); Serial.println(" *C");
-  
-  // Delay between readings
-  delay(2000); // Delay 2 seconds
 }

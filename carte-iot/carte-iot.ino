@@ -1,118 +1,128 @@
-#include <WiFiNINA.h>
+#include <ArduinoBLE.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
-#include "credentials.h"
 
-// Configuration
-const char* server = "iot.gaspezia.fr";
-const int port = 443; // HTTPS port
+// Pin definitions for TFT display
+#define TFT_CS     10
+#define TFT_RST    8
+#define TFT_DC     9
 
-WiFiSSLClient client;
-Adafruit_ST7735 tft = Adafruit_ST7735(10, 9, 8);
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+// BLE device and characteristics
+BLEDevice peripheral;
+BLECharacteristic tempCharacteristic;
+BLECharacteristic lightCharacteristic;
+
+const char* deviceName = "Nano33Sense";
+float prevTempValue = -999.0;
+uint16_t prevLightValue = 0;
+unsigned long lastReconnectAttempt = 0;
+const long reconnectInterval = 10000; // Retry every 10 seconds if disconnected
 
 void setup() {
   Serial.begin(9600);
+  while (!Serial);
 
-  // Initialisation de l'écran
+  // Initialize the TFT display
   tft.initR(INITR_BLACKTAB);
-  tft.fillScreen(ST7735_BLACK);
-  tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setRotation(0);
+  tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
-  tft.setCursor(10, 10);
-  tft.println("Demarrage...");
 
-  // Connexion Wi-Fi
-  connectWiFi();
+  // Initialize BLE
+  if (!BLE.begin()) {
+    Serial.println("BLE initialization failed!");
+    while (1);
+  }
+  Serial.println("Scanning for BLE devices...");
+  BLE.scan();
 }
 
 void loop() {
-  String response = sendGETRequest("/api/");
-  if (!response.isEmpty()) {
-    displayResponse(response);
-  }
+  // Check if the peripheral is available
+  peripheral = BLE.available();
 
-  delay(10000); // Attendre 10 secondes
-}
+  if (peripheral && peripheral.localName() == deviceName) {
+    Serial.print("Found device: ");
+    Serial.println(peripheral.address());
+    BLE.stopScan();
 
-void connectWiFi() {
-  tft.fillScreen(ST7735_BLACK);
-  tft.setCursor(10, 10);
-  tft.println("Connexion Wi-Fi...");
+    if (peripheral.connect()) {
+      Serial.println("Connected to BLE device");
+      tft.fillScreen(ST77XX_BLACK);
+      tft.setCursor(0, 0);
+      tft.println("Connected to BLE");
 
-  int retries = 0;
-  while (WiFi.begin(SSID, WIFI_PASSWORD) != WL_CONNECTED && retries < 10) {
-    delay(1000);
-    tft.print(".");
-    retries++;
-  }
+      Serial.println("================= " + peripheral.discoverAttributes());
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("Connecté au Wi-Fi !");
-    tft.setCursor(10, 30);
-    tft.println("Connecté !");
+      if (peripheral.discoverAttributes()) {
+        Serial.println("================");
+        tempCharacteristic = peripheral.characteristic("12345678-1234-5678-1234-56789abcdef1");
+        lightCharacteristic = peripheral.characteristic("12345678-1234-5678-1234-56789abcdef2");
+
+        if (tempCharacteristic && lightCharacteristic) {
+          Serial.println("Characteristics discovered");
+
+          // Loop while connected
+          while (peripheral.connected()) {
+            Serial.println("test test test")
+            float tempValue = 0;
+            uint16_t lightValue = 0;
+
+            // Read temperature characteristic
+            if (tempCharacteristic && tempCharacteristic.canRead()) {
+              if (!tempCharacteristic.readValue((uint8_t*)&tempValue, sizeof(tempValue))) {
+                Serial.println("Error reading temperature characteristic");
+              }
+            }
+
+            // Read light characteristic
+            if (lightCharacteristic && lightCharacteristic.canRead()) {
+              if (!lightCharacteristic.readValue((uint8_t*)&lightValue, sizeof(lightValue))) {
+                Serial.println("Error reading light characteristic");
+              }
+            }
+
+            if (tempValue != prevTempValue || lightValue != prevLightValue) {
+              tft.fillRect(0, 20, 128, 80, ST77XX_BLACK);
+              tft.setCursor(0, 20);
+              tft.print("Temp: ");
+              tft.print(tempValue);
+              tft.println(" C");
+              tft.print("Light: ");
+              tft.print(lightValue);
+              tft.println(" lux");
+
+              prevTempValue = tempValue;
+              prevLightValue = lightValue;
+            }
+            delay(500); // Reduce read frequency
+          }
+        }
+      }
+
+      Serial.println("Disconnected from BLE device");
+      tft.fillScreen(ST77XX_BLACK);
+      tft.setCursor(0, 0);
+      tft.println("Disconnected");
+
+      // Delay before trying to reconnect
+      delay(1000); // Wait before scanning again
+      BLE.scan();
+    } else {
+      Serial.println("Failed to connect. Waiting before scanning...");
+      delay(1000); // Wait before retrying
+      BLE.scan();
+    }
   } else {
-    Serial.println("Echec de connexion Wi-Fi !");
-    tft.setCursor(10, 30);
-    tft.println("Echec !");
-  }
-}
-
-String sendGETRequest(const char* path) {
-  String response = "";
-
-  if (client.connect(server, port)) {
-    Serial.println("Connecté au serveur HTTPS !");
-    client.println(String("GET ") + path + " HTTP/1.1");
-    client.println(String("Host: ") + server);
-    client.println("Connection: close");
-    client.println();
-
-    // Vérification du statut HTTP
-    String statusLine = client.readStringUntil('\n');
-    Serial.println("Statut HTTP: " + statusLine);
-
-    if (!statusLine.startsWith("HTTP/1.1 200")) {
-      Serial.println("Erreur: Le serveur a répondu avec un statut non 200 !");
-      client.stop();
-      return ""; // Retourne une réponse vide en cas d'erreur
-    }
-
-    // Lire les en-têtes jusqu'à la ligne vide
-    while (client.connected()) {
-      String header = client.readStringUntil('\n');
-      if (header == "\r") break;
-    }
-
-    // Lire le corps de la réponse
-    while (client.available()) {
-      response += client.readString();
-    }
-
-    client.stop();
-    Serial.println("Reponse recue !");
-  } else {
-    Serial.println("Echec de connexion au serveur HTTPS !");
-  }
-
-  return response;
-}
-
-
-void displayResponse(const String& response) {
-  tft.fillScreen(ST7735_BLACK);
-  tft.setCursor(10, 10);
-
-  if (response.isEmpty()) {
-    tft.println("Aucune reponse");
-  } else {
-    tft.println("Reponse:");
-
-    int lineStart = 0;
-    int lineLength = 20; // Nombre de caractères par ligne
-    for (int i = 0; i < response.length(); i += lineLength) {
-      tft.setCursor(10, 30 + (i / lineLength) * 10);
-      tft.println(response.substring(i, i + lineLength));
+    // Attempt reconnection after a certain period if disconnected
+    if (millis() - lastReconnectAttempt > reconnectInterval) {
+      lastReconnectAttempt = millis();
+      Serial.println("Re-scanning for BLE device...");
+      delay(500); // Short delay before scanning
+      BLE.scan();
     }
   }
 }
-
