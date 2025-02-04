@@ -1,81 +1,113 @@
 #include <Wire.h>
-#include <ArduinoBLE.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_TSL2591.h>
 #include <Adafruit_MCP9808.h>
+#include <Adafruit_TSL2591.h>
+#include <ArduinoBLE.h>
 
-// Create instances of the sensors
-Adafruit_TSL2591 tsl = Adafruit_TSL2591(2591);
+// Initialisation des capteurs
 Adafruit_MCP9808 tempsensor = Adafruit_MCP9808();
+Adafruit_TSL2591 tsl = Adafruit_TSL2591(2591);
 
-// BLE service and characteristics with custom UUIDs
-BLEService sensorService("12345678-1234-5678-1234-56789abcdef0");
-BLEFloatCharacteristic tempCharacteristic("12345678-1234-5678-1234-56789abcdef1", BLERead | BLENotify);
-BLEUnsignedIntCharacteristic lightCharacteristic("12345678-1234-5678-1234-56789abcdef2", BLERead | BLENotify);
+// Service BLE
+BLEService environmentService("181A"); // UUID du service BLE standard pour environnement
+BLEFloatCharacteristic temperatureCharacteristic("2A6E", BLERead | BLENotify); // Température
+BLEFloatCharacteristic lightCharacteristic("2A77", BLERead | BLENotify); // Lumière
 
+// Fonctions pour le MCP9808 (gestion Wake et Shutdown)
+void wakeSensor() {
+  Wire.beginTransmission(0x18); // Adresse I2C du MCP9808
+  Wire.write(0x01);            // Pointer sur le registre de configuration
+  Wire.write(0x00);            // Effacer le bit Shutdown (mode normal)
+  Wire.write(0x00);
+  Wire.endTransmission();
+  delay(10); // Petite attente pour permettre au capteur de se réveiller
+}
+
+void shutdownSensor() {
+  Wire.beginTransmission(0x18); // Adresse I2C du MCP9808
+  Wire.write(0x01);            // Pointer sur le registre de configuration
+  Wire.write(0x01);            // Activer le bit Shutdown
+  Wire.write(0x00);
+  Wire.endTransmission();
+}
+
+// Configuration initiale
 void setup() {
   Serial.begin(9600);
   while (!Serial);
 
-  Serial.println("Initializing sensors and BLE...");
+  // Initialisation du capteur MCP9808
+  if (!tempsensor.begin(0x18)) { // Adresse I2C par défaut
+    Serial.println("Erreur: Capteur MCP9808 non détecté !");
+    while (1);
+  }
 
-  // Initialize sensors
+  // Initialisation du capteur TSL2591
   if (!tsl.begin()) {
-    Serial.println("Error: TSL2591 sensor not found!");
+    Serial.println("Erreur: Capteur TSL2591 non détecté !");
     while (1);
   }
-  Serial.println("TSL2591 detected.");
+  tsl.setGain(TSL2591_GAIN_MED);   // Gain moyen
+  tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS); // Temps d'intégration de 100 ms
 
-  if (!tempsensor.begin(0x18)) {
-    Serial.println("Error: MCP9808 sensor not found!");
-    while (1);
-  }
-  Serial.println("MCP9808 detected.");
-
-  // Initialize BLE
+  // Initialisation du BLE
   if (!BLE.begin()) {
-    Serial.println("Error: BLE initialization failed!");
+    Serial.println("Erreur: Initialisation du BLE échouée !");
     while (1);
   }
 
-  BLE.setLocalName("Nano33Sense");
-  BLE.setAdvertisedService(sensorService);
-
-  sensorService.addCharacteristic(tempCharacteristic);
-  sensorService.addCharacteristic(lightCharacteristic);
-  BLE.addService(sensorService);
-
-  tempCharacteristic.writeValue(0.0);
-  lightCharacteristic.writeValue(0);
+  BLE.setLocalName("BLEcard");  // Name should be set as "BLEcard"
+  BLE.setAdvertisedService(environmentService);
+  environmentService.addCharacteristic(temperatureCharacteristic);
+  environmentService.addCharacteristic(lightCharacteristic);
+  BLE.addService(environmentService);
   BLE.advertise();
 
-  Serial.println("BLE is advertising!");
+  Serial.println("Serveur BLE prêt !");
 }
 
+// Lecture de la lumière (TSL2591)
+float readLight() {
+  uint16_t broadband = tsl.getFullLuminosity() >> 16; // Lecture de la lumière visible et IR
+  return (float)broadband;
+}
+
+// Boucle principale
 void loop() {
+  // Keep advertising and handle connections
   BLEDevice central = BLE.central();
 
   if (central) {
-    Serial.print("Connected to central: ");
+    Serial.print("Connecté à : ");
     Serial.println(central.address());
 
     while (central.connected()) {
-      uint16_t visible = tsl.getLuminosity(TSL2591_VISIBLE);
+      // Réveil du capteur MCP9808
+      wakeSensor();
+
+      // Lecture des capteurs
       float temperature = tempsensor.readTempC();
+      float light = readLight();
 
-      tempCharacteristic.writeValue(temperature);
-      lightCharacteristic.writeValue(visible);
+      // Mise à jour des caractéristiques BLE
+      temperatureCharacteristic.writeValue(temperature);
+      lightCharacteristic.writeValue(light);
 
-      Serial.print("Temp: ");
+      // Affichage des valeurs sur le moniteur série
+      Serial.print("Température: ");
       Serial.print(temperature);
-      Serial.print(" °C | Light: ");
-      Serial.print(visible);
+      Serial.println(" °C");
+
+      Serial.print("Lumière: ");
+      Serial.print(light);
       Serial.println(" lux");
 
-      delay(2000); // Reduce data update frequency
+      // Mise en veille du capteur MCP9808
+      shutdownSensor();
+
+      delay(3000); // Attente avant la prochaine lecture
     }
 
-    Serial.println("Central disconnected. Restarting BLE advertising...");
-    BLE.advertise(); // Restart advertising after disconnection
+    Serial.println("Déconnecté !");
   }
 }
