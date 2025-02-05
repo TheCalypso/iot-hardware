@@ -105,7 +105,7 @@ void loop() {
       // Mise en veille du capteur MCP9808
       shutdownSensor();
 
-      delay(3000); // Attente avant la prochaine lecture
+      delay(300); // Attente avant la prochaine lecture
     }
 
     Serial.println("Déconnecté !");
